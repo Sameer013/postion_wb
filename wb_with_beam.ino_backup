@@ -1,0 +1,410 @@
+#include <WebServer.h>
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <WebSocketsServer.h>
+
+const char* ssid = "DIGISOL_SIGMA";
+const char* password = "1234554321";
+
+// Static IP configuration
+IPAddress local_IP(192, 168, 1, 100);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 255, 0);
+
+WebServer server(80);
+WebSocketsServer webSocket = WebSocketsServer(81);
+
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
+
+const float threshold = 1; // degree
+const int ledPin = 15;
+const int sensorPin = 33;
+int sensorState = 0;
+
+float initialHeading = 0;
+float initialRoll = 0;
+float initialPitch = 0;
+float roll1 = 0;
+
+unsigned long lastWiFiCheck = 0;
+const unsigned long wifiCheckInterval = 30000; // 30 sec
+
+bool wifiConnected = false;
+
+
+void handleRoot() {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body { 
+      font-family: Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f2f5f7;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header {
+      width: 100%;
+      background:#005bea;
+      color: white;
+      text-align: center;
+      padding: 18px 0;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.25);
+    }
+
+     header h1 {
+      font-size: 26px;
+      margin: 0;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    
+    main{
+      width: 100vw;
+      background: #263238;
+      color: #ccc;
+      text-align: center;
+      padding: 12px 0;
+      font-size: 13px;
+      letter-spacing: 0.5px;
+      box-shadow: 0 -2px 8px rgba(0,0,0,0.2);
+    }
+    
+    main h1{
+    color: #FFFFFF;
+    font-weight: bold;
+    }
+   
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      width: 340px;
+      padding: 24px;
+      text-align: center;
+      transition: 0.3s ease;
+    }
+    h2 {
+      color: #333;
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+
+    p {
+      color: #444;
+      font-size: 16px;
+      margin: 10px 0;
+    }
+
+    .button { 
+      background-color: #4CAF50; 
+      border: none; 
+      color: white; 
+      padding: 16px 40px;
+      text-decoration: none; 
+      font-size: 28px; 
+      margin: 8px 0; 
+      border-radius: 8px;
+      cursor: pointer; 
+      transition: background 0.3s;
+    }
+
+    .yellow { 
+      background-color: #ffe100ff; 
+      color: black; 
+    }
+
+    .orange { 
+      background-color: orange; 
+      color: black; 
+    }
+
+    #connectionStatus {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      background-color: #ccc;
+      color: black;
+      margin-top: 10px;
+      font-weight: bold;
+    }
+
+    .online {
+      background-color: #91ff89 !important;
+      color: black;
+    }
+
+    .offline {
+      background-color: #ff7b7b !important;
+      color: white;
+    }
+
+    #ledStatus {
+      font-weight: bold;
+    }
+
+    footer {
+      width: 100vw;
+      background: #263238;
+      color: #ccc;
+      text-align: center;
+      padding: 12px 0;
+      font-size: 13px;
+      letter-spacing: 0.5px;
+      box-shadow: 0 -2px 8px rgba(0,0,0,0.2);
+    }
+
+    footer span {
+      color: #00bcd4;
+      font-weight: bold;
+      
+    }
+  </style>
+</head>
+<body>
+
+  <main>
+    <h1>Position Sensor Dashboard</h1>
+  </main>
+
+  <div class="card">
+    <h2>Magnetic Seperator - 701</h2>
+    <p>Shaft Change in Degree</p>
+    <p>Threshold: <b><span id="thresholdValue">1.00</span>°</b></p>
+    <p><button class="button" id="rollValue">0.00°</button></p>
+    <p>BEAM : <b id="beamStatus" style="color:gray;font-size:1.1rem">INACTIVE</b></p>
+     <span class="led">INDICATOR Status: <b id="ledStatus" style="color:orange;">ON</b></span><br>
+    <div id="connectionStatus" class="offline">OFFLINE</div>
+  </div>
+
+  <footer>
+    Developed by <span>Sigma e Solution Pvt Ltd</span>. © 2025 All Rights Reserved.
+  </footer>
+
+  <script>
+   let socket;
+  let reconnectInterval = 5000; 
+  const statusBox = document.getElementById('connectionStatus');
+
+  function connectWebSocket() {
+
+    socket = new WebSocket('ws://' + window.location.hostname + ':81/');
+   ;
+
+    socket.onopen = function() {
+      console.log("WebSocket Connected");
+      statusBox.textContent = 'ONLINE';
+      statusBox.classList.remove('offline');
+      statusBox.classList.add('online');
+    };
+
+    socket.onclose = function() {
+      console.warn("WebSocket Disconnected. Retrying in " + reconnectInterval/1000 + "s...");
+      statusBox.textContent = 'OFFLINE';
+      statusBox.classList.remove('online');
+      statusBox.classList.add('offline');
+
+     
+      setTimeout(connectWebSocket, reconnectInterval);
+    };
+
+    socket.onerror = function(error) {
+      console.error("WebSocket Error:", error);
+      socket.close(); 
+    };
+
+    socket.onmessage = function(event) {
+      try {
+        const data = JSON.parse(event.data);
+
+        document.getElementById('rollValue').innerText = data.location_change.toFixed(2) + '°';
+        document.getElementById('ledStatus').innerText = data.led == 1 ? 'ON' : 'OFF';
+        document.getElementById('ledStatus').style.color = data.led == 1 ? 'orange' : 'gray';
+
+        document.getElementById('beamStatus').innerText = data.beam == 0 ? 'ACTIVE' : 'INACTIVE';
+        document.getElementById('beamStatus').style.color = data.beam == 0 ? 'green' : 'red';
+
+        document.getElementById('rollValue').className = data.led == 1 ? 'orange button' : 'button';
+
+      } catch (e) {
+        console.error("Invalid JSON from WebSocket:", e);
+      }
+    };
+  }
+
+  connectWebSocket();
+
+  </script>
+
+</body>
+</html>
+
+)rawliteral";
+
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+void handleData() {
+  String json = "{";
+  json += "\"location_change\":" + String(roll1, 2) + ",";
+  json += "\"led\":" + String(digitalRead(ledPin));
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void sendSensorData() {
+  String json = "{";
+  json += "\"location_change\":" + String(roll1, 2) + ",";
+  json += "\"led\":" + String(digitalRead(ledPin)) + ",";
+  json += "\"beam\":" + String(digitalRead(sensorPin));
+  json += "}";
+  webSocket.broadcastTXT(json);
+}
+
+void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
+  if (type == WStype_CONNECTED) {
+    IPAddress ip = webSocket.remoteIP(num);
+    Serial.printf("Client %u connected from %s\n", num, ip.toString().c_str());
+  } else if (type == WStype_DISCONNECTED) {
+    Serial.printf("Client %u disconnected\n", num);
+  }
+}
+
+
+void checkWiFi() {
+  if (millis() - lastWiFiCheck >= wifiCheckInterval) {
+    lastWiFiCheck = millis();
+    if (WiFi.status() != WL_CONNECTED) {
+      if (wifiConnected) {
+        wifiConnected = false;
+        Serial.println("WiFi lost. Trying to reconnect...");
+      }
+      WiFi.disconnect();
+      WiFi.begin(ssid, password);
+    } else if (!wifiConnected) {
+      wifiConnected = true;
+      Serial.println("WiFi reconnected!");
+      Serial.print("IP: "); Serial.println(WiFi.localIP());
+
+      // Restart web services
+      server.begin();
+      webSocket.begin();
+      webSocket.onEvent(onWebSocketEvent);
+      Serial.println("Web server and WebSocket restarted.");
+    }
+  }
+}
+
+void setup() {
+  Wire.begin(21, 22);
+  Serial.begin(115200);
+  pinMode(ledPin, OUTPUT);
+  pinMode(sensorPin, INPUT);
+  digitalWrite(ledPin, LOW);
+
+  // WiFi configuration
+  WiFi.config(local_IP, gateway, subnet);
+  WiFi.begin(ssid, password);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+
+  Serial.println("Connecting to WiFi...");
+  unsigned long startAttemptTime = millis();
+  const unsigned long wifiTimeout = 10000; // 10 sec
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < wifiTimeout) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println("\nWiFi connected!");
+    Serial.print("IP: "); Serial.println(WiFi.localIP());
+    
+    server.begin();
+    webSocket.begin();
+    webSocket.onEvent(onWebSocketEvent);
+    Serial.println("Web server and WebSocket started.");
+  } else {
+    wifiConnected = false;
+    Serial.println("\nWiFi not connected. Running offline.");
+  }
+
+  if (!bno.begin()) {
+    Serial.println("BNO055 not detected!");
+    while (1);
+  }
+
+  delay(1000);
+  bno.setExtCrystalUse(true);
+  Serial.println("Calibrating sensor...");
+  uint8_t system, gyro, accel, mag;
+  do {
+    bno.getCalibration(&system, &gyro, &accel, &mag);
+    Serial.printf("Calibration - Sys:%d, Gyro:%d\n", system, gyro);
+    delay(500);
+  } while (gyro < 3);
+
+  sensors_event_t orientationData;
+  bno.getEvent(&orientationData);
+  initialHeading = orientationData.orientation.x;
+  initialRoll = orientationData.orientation.y;
+  initialPitch = orientationData.orientation.z;
+
+  Serial.println("Initial orientation recorded.");
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
+}
+
+
+float angleDiff(float initial, float current) {
+  float diff = abs(initial - current);
+  if (diff > 180) diff = 360 - diff;
+  return diff;
+}
+
+void loop() {
+  checkWiFi();
+
+  sensorState = digitalRead(sensorPin);
+  sensors_event_t orientationData;
+  bno.getEvent(&orientationData);
+
+  float roll = orientationData.orientation.y;
+  roll1 = roll - initialRoll;
+
+  // only bno055
+  //bool orientationChanged = ((angleDiff(roll, initialRoll) > threshold));
+
+  // with beam sensor or bno055
+  // bool orientationChanged = ((angleDiff(roll, initialRoll) > threshold) || sensorState == 1);
+
+  bool orientationChanged = ((angleDiff(roll, initialRoll) > threshold) && sensorState == 1);
+
+  if (orientationChanged) {
+    digitalWrite(ledPin, HIGH);
+  } else {
+    digitalWrite(ledPin, LOW);
+  }
+
+  Serial.printf("Roll: %.2f | Change: %.2f | %s\n", roll, roll1, digitalRead(ledPin) ? "MOTION - LED ON" : "NO MOTION - LED OFF");
+
+  if (wifiConnected) {
+    sendSensorData();
+    webSocket.loop();
+    server.handleClient();
+  }
+
+  delay(500);
+}
