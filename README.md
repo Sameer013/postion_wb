@@ -35,6 +35,8 @@ The project streams live orientation data(Roll) over **WebSockets** to a **Web D
    ```
 4. You’ll see a live dashboard updating orientation data in real time!
 
+![Dashboard Preview](images/img1.png)
+
 ---
 
 ##  API Data Format
